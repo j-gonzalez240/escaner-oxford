@@ -1,51 +1,80 @@
 import streamlit as st
+import streamlit.components.v1 as components
 import requests
-from PIL import Image
-from streamlit_qrcode_scanner import qrcode_scanner
 
 st.set_page_config(page_title="Escáner Oxford", page_icon="🚲", layout="centered")
 
 st.title("🚲 Escáner y Consulta Oxford")
 
-# Creamos 3 pestañas para que uses el método más cómodo en la tienda
-tab_vivo, tab_foto, tab_manual = st.tabs([
-    "📷 Escáner en Vivo", 
-    "📸 Foto al Código", 
-    "⌨️ Escribir Manual"
-])
+# Lector configurado con facingMode: "environment" (obliga a usar la cámara trasera)
+escaner_trasero_html = """
+<script src="https://unpkg.com/html5-qrcode"></script>
+<div style="text-align: center; font-family: sans-serif;">
+  <div id="reader" style="width: 100%; max-width: 420px; margin: auto; border-radius: 10px; overflow: hidden;"></div>
+  <div id="estado" style="margin-top: 8px; font-weight: bold; color: #00a650; font-size: 15px;">
+    📷 Apunta con la cámara trasera al código
+  </div>
+  <button id="btn-reiniciar" onclick="iniciarCamara()" style="display:none; margin-top:8px; padding:8px 16px; border:none; border-radius:6px; background:#0066cc; color:white; font-size:14px; cursor:pointer;">
+    🔄 Escanear otro código
+  </button>
+</div>
 
-codigo_buscado = None
+<script>
+  let html5QrCode;
 
-# 1. ESCÁNER EN TIEMPO REAL
-with tab_vivo:
-    st.caption("Apunta con la cámara al código de barras o QR:")
-    codigo_vivo = qrcode_scanner(key="lector_en_vivo")
-    if codigo_vivo:
-        st.success(f"Código detectado: {codigo_vivo}")
-        codigo_buscado = codigo_vivo
+  function enviarAStreamlit(codigo) {
+    try {
+      const parentDoc = window.parent.document;
+      const input = parentDoc.querySelector('input[aria-label="Código o nombre del producto:"]');
+      if (input) {
+        const setter = Object.getOwnPropertyDescriptor(window.parent.HTMLInputElement.prototype, 'value').set;
+        setter.call(input, codigo);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+        setTimeout(() => {
+          input.dispatchEvent(new window.parent.KeyboardEvent('keydown', {
+            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true
+          }));
+          input.blur();
+        }, 50);
+      }
+    } catch (e) {
+      console.log("Error enviando al input:", e);
+    }
+  }
 
-# 2. CÁMARA NATIVA DE STREAMLIT (Ideal si la etiqueta es pequeña o cuesta enfocar)
-with tab_foto:
-    st.caption("Toma una foto de cerca al código de barras:")
-    imagen_capturada = st.camera_input("Capturar etiqueta")
-    if imagen_capturada is not None:
-        img_pil = Image.open(imagen_capturada)
-        codigos = zxingcpp.read_barcodes(img_pil)
-        if codigos:
-            codigo_foto = codigos[0].text
-            st.success(f"Código leído: {codigo_foto}")
-            codigo_buscado = codigo_foto
-        else:
-            st.error("No se distinguió el código. Acerca más la cámara a las barras e intenta de nuevo.")
+  function iniciarCamara() {
+    document.getElementById("btn-reiniciar").style.display = "none";
+    document.getElementById("estado").innerText = "📷 Apunta con la cámara trasera al código";
+    
+    html5QrCode = new Html5Qrcode("reader");
+    html5QrCode.start(
+      { facingMode: "environment" }, // Fuerza la cámara principal trasera
+      { fps: 10, qrbox: { width: 250, height: 110 } },
+      (decodedText) => {
+        document.getElementById("estado").innerText = "✅ Código leído: " + decodedText;
+        document.getElementById("btn-reiniciar").style.display = "inline-block";
+        enviarAStreamlit(decodedText);
+        html5QrCode.stop();
+      },
+      (errorMessage) => {}
+    ).catch((err) => {
+      document.getElementById("estado").innerText = "⚠️ Da permiso a la cámara en tu navegador.";
+    });
+  }
 
-# 3. BÚSQUEDA MANUAL POR TEXTO O SKU
-with tab_manual:
-    texto_manual = st.text_input(
-        "Ingresa el SKU, código de barras o modelo:", 
-        placeholder="Ej: BA2951, Merak 1 o código de 13 dígitos"
-    )
-    if texto_manual:
-        codigo_buscado = texto_manual.strip()
+  iniciarCamara();
+</script>
+"""
+
+with st.expander("📷 Abrir Escáner de Cámara Trasera", expanded=True):
+    components.html(escaner_trasero_html, height=300)
+
+# Cuadro de búsqueda (se rellena solo al escanear o puedes escribir a mano)
+codigo_buscado = st.text_input(
+    "Código o nombre del producto:",
+    placeholder="Escanea arriba o escribe el SKU / modelo (ej: BA2951 o Merak 1)"
+)
 
 # --- FUNCIONES DE CONSULTA A OXFORDSTORE.CL ---
 def buscar_en_oxford(termino):
@@ -54,17 +83,13 @@ def buscar_en_oxford(termino):
         "q": termino,
         "resources[type]": "product",
         "resources[limit]": 5,
-        # Indicamos a Shopify que busque específicamente en título, SKU y código de barras
         "resources[options][fields]": "title,variants.sku,variants.barcode"
     }
     headers = {"User-Agent": "Mozilla/5.0"}
-    
     resp = requests.get(url_busqueda, params=params, headers=headers)
     if resp.status_code != 200:
         return []
-    
-    datos = resp.json()
-    return datos.get("resources", {}).get("results", {}).get("products", [])
+    return resp.json().get("resources", {}).get("results", {}).get("products", [])
 
 def obtener_detalle_producto(handle):
     url_producto = f"https://oxfordstore.cl/products/{handle}.js"
@@ -76,11 +101,12 @@ def obtener_detalle_producto(handle):
 
 # --- MOSTRAR RESULTADOS AUTOMÁTICAMENTE ---
 if codigo_buscado:
-    with st.spinner(f"Buscando '{codigo_buscado}' en oxfordstore.cl..."):
-        resultados = buscar_en_oxford(codigo_buscado)
+    termino = codigo_buscado.strip()
+    with st.spinner(f"Buscando '{termino}' en oxfordstore.cl..."):
+        resultados = buscar_en_oxford(termino)
         
         if not resultados:
-            st.warning("No apareció con el código de barras largo. Intenta escanear o escribir el código SKU corto de la etiqueta.")
+            st.warning("No apareció con ese código exacto. Intenta con el código SKU corto de la etiqueta o el nombre del modelo.")
         else:
             for item in resultados:
                 url_limpia = item["url"].split("?")[0]
@@ -96,10 +122,9 @@ if codigo_buscado:
                             precio_actual = int(v["price"] / 100)
                             precio_normal = int(v["compare_at_price"] / 100) if v.get("compare_at_price") else precio_actual
                             
-                            # Destacar con una flecha la fila que coincide exactamente con lo escaneado
                             sku_var = str(v.get("sku") or "")
                             bar_var = str(v.get("barcode") or "")
-                            coincide = "👉 " if (codigo_buscado in [sku_var, bar_var]) else ""
+                            coincide = "👉 " if (termino in [sku_var, bar_var]) else ""
                             
                             filas.append({
                                 "Variante": f"{coincide}{v['title']}",
