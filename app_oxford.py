@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 from PIL import Image
-import zxingcpp
 from streamlit_qrcode_scanner import qrcode_scanner
 
 st.set_page_config(page_title="Escáner Oxford", page_icon="🚲", layout="centered")
